@@ -1,0 +1,112 @@
+
+
+
+
+//------------------------------[motor controller: MDO3A pololu]-------------------------------------//
+
+#define maxSpeed 100
+
+#define ENCODERS_I2C_ADDRESS 0x29
+#define ENCODERS_I2C_MSG_SIZE 2
+char encodersMsg[ENCODERS_I2C_MSG_SIZE];
+
+
+    void updateMotorStatuses() {
+        Wire.beginTransmission(ENCODERS_I2C_ADDRESS);
+        Wire.requestFrom(ENCODERS_I2C_ADDRESS, ENCODERS_I2C_MSG_SIZE);
+        Wire.endTransmission();
+        
+        for (int i=0; i<=ENCODERS_I2C_MSG_SIZE; i++) {
+              encodersMsg[i] = Wire.read();
+        }
+
+    leftMotorSpeed = (float)encodersMsg[0]*-1;
+    rightMotorSpeed = (float)encodersMsg[1];
+
+
+  speedPIDInputRight = speedMovingAvarageFilter.process(speedFIR.process(rightMotorSpeed/10));
+  speedPIDInputLeft = speedMovingAvarageFilter.process(speedFIR.process(leftMotorSpeed/10));
+}
+
+
+    void stopMotors() {
+      
+//        moveMotor(1, 0); // right
+//        moveMotor(2, 0); // left
+  
+  
+      digitalWrite(InA_R, LOW);                       
+      digitalWrite(InB_R, LOW);
+      digitalWrite(InA_L, LOW);                      
+      digitalWrite(InB_L, LOW);
+  
+      analogWrite(PWM_A, 0);
+      analogWrite(PWM_B, 0);
+    }
+
+
+//Speed is a value in procentage (0-100%)
+//Motor1 is equal to Right-motor
+//Motor2 is equal to Left-motor
+
+void moveMotor(int motor, double speed) {
+                                              
+   if(speed > maxSpeed)
+      speed = maxSpeed;
+        
+    else if (speed < -maxSpeed)
+       speed = -maxSpeed;
+       int pwmToMotor = 0;      //Skapar pwm signal till motor och sätter initsieringvärdet till noll
+                     
+     if (motor == 1)
+        pwmToMotor = (abs(speed)*255/100);  //*motor1Calibration
+     else
+        pwmToMotor = (abs(speed)*255/100);  //*motor2Calibration
+               
+               
+     if (pwmToMotor > 255){
+         pwmToMotor = 255;
+     }          
+
+     if (motor == 1) {
+               
+       if (speed == 0) {
+         digitalWrite(InA_R, LOW);                        
+         digitalWrite(InB_R, LOW);
+         analogWrite(PWM_A, 0);
+       } 
+       
+       else if (speed < 0) {
+         //digitalWrite(dir_a, motor1ForwardDir);
+         digitalWrite(InA_R, LOW);                        
+         digitalWrite(InB_R, HIGH);
+         analogWrite(PWM_A, pwmToMotor);
+       }
+            
+       else {               
+          digitalWrite(InA_R, HIGH);                       
+          digitalWrite(InB_R, LOW);
+          analogWrite(PWM_A, pwmToMotor);             
+       }          
+     }// if motor==1  
+  
+     else { //else #2
+        if (speed == 0) {  
+           digitalWrite(InA_L, LOW);                     
+           digitalWrite(InB_L, LOW);
+           analogWrite(PWM_B, 0);
+        }
+         
+        else if (speed < 0){ 
+            digitalWrite(InA_L, LOW);                     
+            digitalWrite(InB_L, HIGH);
+            analogWrite(PWM_B, pwmToMotor);
+         }
+         
+         else{
+             digitalWrite(InA_L, HIGH);                      
+             digitalWrite(InB_L, LOW);
+             analogWrite(PWM_B, pwmToMotor);
+         }          
+     }//end else #2
+} // end move motors
