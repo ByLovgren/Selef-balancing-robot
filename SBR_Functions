@@ -1,0 +1,70 @@
+//-----------------------------------------[Functions]-----------------------------------------------//
+
+
+
+  void initTimedActions() {
+    updateMotorStatusesTimedAction.setInterval(configuration.motorSpeedSensorSampling);
+    updateIMUSensorsTimedAction.setInterval(configuration.angleSensorSampling);
+  }
+
+
+  void initAnglePID() {
+    anglePIDSetpoint = 0;
+    anglePID.SetOutputLimits(-100, 100);
+    //anglePID.SetMode(AUTOMATIC);
+    anglePID.SetSampleTime(configuration.anglePIDSampling);
+
+  }
+
+  void initSpeedPIDRight() {
+    speedPIDSetpointRight = 0;
+    speedPIDRight.SetOutputLimits(-(float)configuration.speedPIDOutputLowerLimit/100, (float)configuration.speedPIDOutputLowerLimit/100);
+    //anglePID.SetMode(AUTOMATIC);
+    speedPIDRight.SetSampleTime(configuration.speedPIDSampling);
+    speedPIDRight.SetTunings((float)configuration.speedPIDKp / 100, (float)configuration.speedPIDKi / 100, (float)configuration.speedPIDKd / 100);
+  }
+
+  void initSpeedPIDLeft() {
+    speedPIDSetpointLeft = 0;
+    speedPIDLeft.SetOutputLimits(-(float)configuration.speedPIDOutputLowerLimit/100, (float)configuration.speedPIDOutputLowerLimit/100);
+    //anglePID.SetMode(AUTOMATIC);
+    speedPIDLeft.SetSampleTime(configuration.speedPIDSampling);
+    speedPIDLeft.SetTunings((float)configuration.speedPIDKp / 100, (float)configuration.speedPIDKi / 100, (float)configuration.speedPIDKd / 100);
+  }
+
+
+  void updateIMUSensors() {
+    sixDOF.getValues(imuValues);  
+    sixDOF.getYawPitchRoll(ypr);
+    roll = rollFIR.process(ypr[2]);
+    anglePIDInput = roll; //Input paramter from th 9DOF sensor
+  }
+
+   
+             void updateAnglePID(){
+ 
+               //was inside if : &&  configuration.anglePIDLowerLimit != 0
+               
+              if(abs(anglePIDInput) <  (float)configuration.anglePIDLowerLimit/100) { 
+                
+               //Vi befinner oss närsa setpoint, så vi använder en mjuk fin PID för att reglera de små vinklarna.
+               //we're close to setpoint, use soft tuning parameters
+               //I have puted Ki part to be 1*display value. This to config very small Ki parameters
+                  anglePID.SetTunings( (float)configuration.anglePIDConKp / 100,  (float)configuration.anglePIDConKi / 1, (float)configuration.anglePIDConKd/100);
+               }
+               
+               //var < 45 innan //nu ställer man in det med konsollen
+               else if (abs(anglePIDInput) > (float)configuration.anglePIDLowerLimit/100) {
+               //we're far from setpoint, use aggressive tuning parameters
+               anglePID.SetTunings((float)configuration.anglePIDAggKp / 100, (float)configuration.anglePIDAggKi / 10, (float)configuration.anglePIDAggKd / 100); 
+               }  
+    
+               else {
+               anglePID.SetTunings(0, 0, 0);
+               stopMotors();  //Anropar fliken "motors" och funktionen "stopMotors"
+               }
+               
+          }
+
+
+//End of Functions
