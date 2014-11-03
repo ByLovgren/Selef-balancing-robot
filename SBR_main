@@ -1,0 +1,382 @@
+
+    #include <PID_v1.h> //github.com/mwoodward/Arduino-PID-Library
+    #include <FreeSixIMU.h> // imu. www.varesano.net/projects/hardware/FreeIMU#library
+    #include <FIMU_ADXL345.h> // imu
+    #include <FIMU_ITG3200.h> // imu
+    #include <Wire.h> // for i2c
+    #include <math.h> // where would we be without math?
+    #include <TimedAction.h> // for updating sensors and debug
+    #include <Button.h>        //github.com/JChristensen/Button
+    #include <EEPROM.h> // for storing configuraion
+    #include <avr/wdt.h> // watchdog
+    #include <FIR.h>  //github.com/sebnil/FIR-filter-Arduino-Library
+    #include <MovingAvarageFilter.h> //github.com/sebnil/Moving-Avarage-Filter--Arduino-Library
+    #include <SerialCommand.h>
+
+    
+    unsigned long lastCmdTime = 0;    //för serial buffer
+
+ //configure struct that is stored in eeprom and updated from the lcd console.
+    struct Configure {
+      word speedPIDKp;
+      word speedPIDKi;
+      word speedPIDKd;
+      word speedPIDOutputLowerLimit;
+      word speedPIDOutputHigherLimit;
+      word anglePIDAggKp;
+      word anglePIDAggKi;
+      word anglePIDAggKd;
+      word anglePIDConKp;
+      word anglePIDConKi;
+      word anglePIDConKd;
+      word anglePIDLowerLimit;
+      uint8_t anglePIDSampling;
+      uint8_t speedPIDSampling;
+      uint8_t angleSensorSampling;
+      uint8_t motorSpeedSensorSampling;
+      uint8_t v1;
+      uint8_t v2;  
+      uint8_t v3;
+      uint8_t v4;
+    };
+    
+    Configure configuration;
+
+    //SerialCommand sCmd;     // The SerialCommand object
+
+    boolean started = false;  // if the robot is started or not
+    boolean debug = false;
+
+        // these take care of the timing of things
+    TimedAction debugTimedAction = TimedAction(1000,debugEverything);
+    
+    //var 10 innan 140116
+    TimedAction updateMotorStatusesTimedAction = TimedAction(8, updateMotorStatuses); 
+    
+    //var 10 innan 140116
+    TimedAction updateIMUSensorsTimedAction = TimedAction(8, updateIMUSensors); 
+
+
+        // button declarations
+    Button startBtn(7, false, false, 20);
+    Button stopBtn(6, false, false, 20);
+    Button calibrateBtn(4, false, false, 20);
+
+        // motor controller
+    #define InA_R               8   //direction control for motor Right
+    #define InB_R               9
+    #define PWM_A               10  //PWM control for motor  pin 10
+    
+    #define PWM_B               11  //PWM control for motor B pin 11
+    #define InA_L               13  //direction control for motor Left
+    #define InB_L               12  
+    
+        // imu variables
+    float imuValues[6];
+    float ypr[3];
+    float roll;
+    
+        // motor speeds and calibrations
+    float motorSpeed;
+    float leftMotorSpeed;
+    float rightMotorSpeed;
+    //float motor1Calibration = 1;
+    //float motor2Calibration = 1;
+
+        // PID variables
+    double anglePIDSetpoint, anglePIDInput, anglePIDOutput;
+    double speedPIDInputRight, speedPIDOutputRight, speedPIDSetpointRight;
+    double speedPIDInputLeft, speedPIDOutputLeft, speedPIDSetpointLeft;
+
+        // The cascading PIDs. The tunings are updated from the code
+    PID anglePID(&anglePIDInput, &anglePIDOutput, &anglePIDSetpoint, 0, 0, 0, REVERSE);
+    
+PID speedPIDRight(&speedPIDInputRight,&speedPIDOutputRight,&speedPIDSetpointRight,0,0,0, DIRECT);
+PID speedPIDLeft(&speedPIDInputLeft, &speedPIDOutputLeft, &speedPIDSetpointLeft, 0,0,0, DIRECT);
+
+        // filters
+    FIR rollFIR;
+    FIR speedFIR;
+    MovingAvarageFilter speedMovingAvarageFilter(40);
+    MovingAvarageFilter throttleControlAvarageFilter(40);
+
+        // Set the FreeSixIMU object. This handles the communcation to the IMU.
+    FreeSixIMU sixDOF = FreeSixIMU();
+
+
+        // remote control
+ //goes from -128 to +127 but we will only use from -127 to +127 to get symmetry
+ int8_t steering = 0; 
+ float motor1SteeringOffset;
+ float motor2SteeringOffset;
+
+
+
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+//---------------------------------------[Setup]--------------------------------------------------//
+//------------------------------------------------------------------------------------------------//
+
+    void setup() {
+  
+      Serial.begin(9600);
+      Serial1.begin(115200);
+      Serial1.println("Initiating");
+      //initSerialCommand();
+
+           //------------------------[Inisiating Motors]-----------------------------------//
+       //Seting thedirection to "Forward" as inisiating state
+        
+        //Set control pins to be outputs
+        pinMode(PWM_A, OUTPUT);  //pwm signals
+        pinMode(PWM_B, OUTPUT);
+        
+        pinMode(InA_R, OUTPUT);  //motor A
+        pinMode(InB_R, OUTPUT);
+        
+        pinMode(InA_L, OUTPUT);  //Motor B
+        pinMode(InB_L, OUTPUT);
+        
+        //Changing the PWM frequency
+        //Changing to 20 kHz
+        setPwmFrequency(10, 1.5625);
+        setPwmFrequency(11, 1.5625);
+       
+        //Motor forward
+        digitalWrite(InA_R, LOW);
+        digitalWrite(InB_R, HIGH);
+        digitalWrite(InA_L, LOW);
+        digitalWrite(InB_L, HIGH);
+  
+         stopMotors();          // Sickar till fliken motors där stop motor finns. Stoppar motorerna
+         loadConfig();          // Skickar till fliken "eeprom_store" där load config finns 
+                                //som laddar in parameterar från E-prom
+ 
+  
+             //--------------------[initiating i2c commuication]-----------------------------//
+          Wire.begin();
+          delay(5);
+            //----------------------[Inisiating IMU sensors]--------------------------------//
+          sixDOF.init(); //begin the IMU
+          delay(5);
+
+            //-------------------------[Inisiating PIDs]------------------------------------//
+          initAnglePID();             //initsierar AnglePID
+          initSpeedPIDRight();        //Initsierar SpeedPID right
+          initSpeedPIDLeft();         //Initsierar SpeedPID left
+          initTimedActions();         //Initsierar Timer
+
+            //-----------------------[initating the Filters]--------------------------------//
+          float rollFIRcoef[FILTERTAPS] = 
+          { 
+            0.021, 0.096, 0.146, 0.096, 0.021          
+          };
+          float gain = 0;
+          for (int i=0; i<FILTERTAPS; i++) {
+            gain += rollFIRcoef[i];
+          }
+          rollFIR.setCoefficients(rollFIRcoef);
+          rollFIR.setGain(gain);
+        
+          float speedFIRcoef[FILTERTAPS] = { 
+            1.000, 10.0, 20.0, 10.0, 1.00 };
+          gain = 0;
+          for (int i=0; i<FILTERTAPS; i++) {
+            gain += speedFIRcoef[i];
+          }
+          speedFIR.setCoefficients(speedFIRcoef);
+          speedFIR.setGain(gain);
+        
+          // set the watchdog to 2s (this will restart the arduino if it freezes)
+          wdt_enable(WDTO_2S);
+  
+    }//End of Setup
+
+
+//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+//------------------------------------------[Main Loop]-------------------------------------------//
+//------------------------------------------------------------------------------------------------//
+
+    void loop() {   
+  
+        //Reset the WatchDog
+        wdt_reset();
+      
+                //------------------[Update Sensors and sometimes debug]------------------//
+        updateMotorStatusesTimedAction.check();
+        updateIMUSensorsTimedAction.check(); //anglePIDinput
+        
+         Serial1.println(ypr[2]);
+     //  Serial1.println(rollFIR.process(ypr[2]));
+
+        if (debug)
+          debugTimedAction.check();
+
+        if (started) { //#1
+            
+            
+                 //-------------[Compute Speed PID Right and lEFT]---------------// 
+       
+                 //input is wheel speed. output is angleSetpoint
+                 speedPIDLeft.Compute();
+                 speedPIDRight.Compute();
+                 
+                 //Offseten on position is feedback to the angle of the pendulum
+                 anglePIDSetpoint = (speedPIDOutputRight + speedPIDOutputLeft)/2;
+    
+        
+                 //----------------[Update Angle PID parameters]-----------------//
+              
+                  updateAnglePID(); //Anropar funktionen Update Agnle PID
+                  anglePID.Compute();  //Anropar funktionen anglePID.Compute
+        
+                   
+                //--------------------[remote Steering]-------------------------//
+    
+    
+                // set motor pwm
+//                    if(Serial1.available() > 0 && millis() -lastCmdTime < 5){
+//                          char cmd = Serial1.read();
+//                          Serial1.print("Remote: ");
+//                          Serial1.println(cmd);
+//
+//                          switch(cmd) {
+//                            // Forward
+//                            case 'w':
+//                                motor1SteeringOffset = 10;
+//                                motor2SteeringOffset = 10;                          
+//                            break; 
+//                          }//end switch
+//                    }//end if remote
+                    
+                   moveMotor(1, (anglePIDOutput + motor1SteeringOffset));
+                   moveMotor(2, (anglePIDOutput + motor2SteeringOffset));
+                   /*moveMotor(1, anglePIDOutput);
+                   moveMotor(2, anglePIDOutput);*/
+      
+         }//end if(started)
+  
+         else {
+            moveMotor(1, 0);
+            moveMotor(2, 0);      
+          }
+  
+          // read serial and do commands if requested (commented since i could not get 
+          //it working on Arduino Leonardo)
+          //sCmd.readSerial();
+         // readSerialCommand();
+      
+      
+      //-------------------------[Check Buttons]------------------------------//
+  
+        startBtn.read();
+        stopBtn.read();
+        calibrateBtn.read();
+        
+        if (startBtn.wasReleased() || stopBtn.wasReleased()) {    
+            get_msg_from_console();//in Consol Communication
+            saveConfig(); //In eeprom
+            //  debugConfiguration();
+            //---------[Calling PID Function]----------//    
+            initAnglePID();
+            initSpeedPIDRight();
+            initSpeedPIDLeft();
+            initTimedActions();
+         }
+  
+  
+        if (startBtn.wasReleased()) {
+         //   Serial.println("startBtn.wasReleased");
+            anglePID.SetMode(AUTOMATIC);
+            speedPIDRight.SetMode(AUTOMATIC);
+            speedPIDLeft.SetMode(AUTOMATIC);
+            delay(500);
+            started = true;
+        }
+  
+        if (stopBtn.wasReleased()) {
+         //   Serial.println("stopBtn.wasReleased");
+            stopMotors();
+            anglePID.SetMode(MANUAL);
+            speedPIDRight.SetMode(MANUAL);
+            speedPIDLeft.SetMode(MANUAL);
+            started = false;
+        }
+        
+        if (started && calibrateBtn.wasPressed()) {
+         //   Serial.println("calibrateBtn.wasPressed");
+            speedPIDRight.SetMode(MANUAL);
+            speedPIDLeft.SetMode(MANUAL);
+            speedPIDOutputRight = 0;
+            speedPIDOutputLeft = 0;
+            anglePIDInput = 0;      
+        }
+        
+  else if (started && calibrateBtn.wasReleased()) {
+   // Serial.println("calibrateBtn.wasReleased");
+    speedPIDRight.SetMode(AUTOMATIC);
+    speedPIDLeft.SetMode(AUTOMATIC);
+    delay(500);    
+  }
+
+
+
+
+}//End main loop
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//----------------------------------------[Debug]-------------------------------------------------//
+
+/* just debug functions. uncomment the debug information you want in debugEverything */
+void debugEverything() {
+  //debugImu();
+ // debugAnglePID();
+ //  debugSpeedPID();
+ //  debugMotorSpeeds();
+ //  debugMotorCalibrations();
+ //  debugMotorSpeedCalibration();
+  debugChart2();
+  //Serial.println();
+}
+
+void debugChart2() {
+  sendPlotData("rightMotorSpeed", rightMotorSpeed);
+  sendPlotData("leftMotorSpeed", leftMotorSpeed);
+  sendPlotData("motorSpeed", motorSpeed);
+  sendPlotData("speedPIDInput", speedPIDInputRight);
+  sendPlotData("speedPIDOutput", speedPIDOutputRight);
+  sendPlotData("speedPIDSetpoint", speedPIDSetpointRight);
+  
+  sendPlotData("anglePIDInput", anglePIDInput);
+  
+  sendPlotData("anglePIDOutput", anglePIDOutput);
+  sendPlotData("anglePIDSetpoint", anglePIDSetpoint);
+  sendPlotData("steering", steering);
+  sendPlotData("motor1SteeringOffset", motor1SteeringOffset);
+  sendPlotData("motor2SteeringOffset", motor2SteeringOffset);
+
+}
+void sendPlotData(String seriesName, float data) {
+  Serial1.print("{");
+  Serial1.print(seriesName);
+  Serial1.print(",T,");
+  Serial1.print(data);
+  Serial1.println("}");
+}
+
+void debugConfiguration() {
+
+}
