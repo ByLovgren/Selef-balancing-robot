@@ -1,7 +1,7 @@
 Selef_balancing_robot
 =====================
 
-Code for a self balancing robot
+Code for a self balancing robot nased on Arduino MEGA and tow arduino Nano's
 
 So here is the code for the robot. Not that I have a consoll whehe one can tune the parameters and updat it to the robot. This done, so that one dose not need to upload the code over and over again when tuning the PID parameters.
 
